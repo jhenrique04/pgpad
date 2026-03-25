@@ -49,25 +49,54 @@ export class QueryExecutor {
 		const currentExecutionId = ++this.executionId;
 		// Store callback for use in completion handlers
 		this.onComplete = onComplete;
-		// Clear previous results
+		// Stop polling for previous queries immediately
 		this.stopPollingLoop();
-		this.latestPageRequests.clear();
-		this.resultTabs = [];
-		this.activeResultTabId = null;
-		this.nextResultTabId = 1;
 
 		try {
 			const queryIds = await Commands.submitQuery(connectionId, queryText.trim());
 
-			// Create a tab per statement
-			for (const queryId of queryIds) {
-				await this.initializeQueryTab(queryId, queryText, currentExecutionId);
+			if (currentExecutionId !== this.executionId) return;
+
+			// Clear previous results only after we've successfully submitted the new query
+			this.latestPageRequests.clear();
+			this.resultTabs = [];
+			this.activeResultTabId = null;
+			this.nextResultTabId = 1;
+
+			// Create all tabs immediately so they show up in the UI in a "Running" state
+			const newTabs: QueryResultTab[] = queryIds.map((queryId, index) => {
+				const tabId = this.nextResultTabId++;
+				const baseTitle = this.generateTabTitle(queryText);
+				const title =
+					queryIds.length > 1 ? `${baseTitle} (${index + 1}/${queryIds.length})` : baseTitle;
+
+				return {
+					id: tabId,
+					queryId,
+					name: title,
+					query: queryText,
+					timestamp: Date.now(),
+					status: 'Running',
+					currentPageIndex: 0,
+					currentPageData: null,
+					totalPages: null
+				};
+			});
+
+			this.resultTabs = newTabs;
+			this.activeResultTabId = newTabs[0]?.id ?? null;
+
+			// Now wait for them to be renderable
+			for (const tab of newTabs) {
+				await this.waitUntilTabRenderable(tab.queryId, tab.id, currentExecutionId);
 			}
 		} catch (error) {
 			if (currentExecutionId !== this.executionId) {
 				return;
 			}
 			console.error('Failed to execute query:', error);
+
+			this.latestPageRequests.clear();
 
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			const tabId = this.nextResultTabId++;
@@ -90,26 +119,7 @@ export class QueryExecutor {
 		}
 	}
 
-	private async initializeQueryTab(queryId: QueryId, queryText: string, executionId: number) {
-		if (executionId !== this.executionId) return;
-
-		const tabId = this.nextResultTabId++;
-
-		const newTab: QueryResultTab = {
-			id: tabId,
-			queryId,
-			name: `Query ${queryId}`,
-			query: queryText,
-			timestamp: Date.now(),
-			status: 'Running',
-			currentPageIndex: 0,
-			currentPageData: null,
-			totalPages: null
-		};
-
-		this.resultTabs = [...this.resultTabs, newTab];
-		this.activeResultTabId = tabId;
-
+	private async waitUntilTabRenderable(queryId: QueryId, tabId: number, executionId: number) {
 		const info = await this.waitUntilRenderable(queryId);
 		if (executionId !== this.executionId) return;
 
@@ -126,13 +136,10 @@ export class QueryExecutor {
 			return;
 		}
 
-		const tabName = this.generateTabTitle(queryText);
-
 		if (!info.returns_values) {
 			this.resultTabs[tabIndex] = {
 				...this.resultTabs[tabIndex],
 				status: info.status,
-				name: tabName,
 				queryReturnsResults: false,
 				affectedRows: info.affected_rows ?? undefined
 			};
@@ -158,7 +165,6 @@ export class QueryExecutor {
 		this.resultTabs[tabIndex] = {
 			...this.resultTabs[tabIndex],
 			columns: info.columns,
-			name: tabName,
 			currentPageData: info.first_page,
 			status: info.status,
 			queryReturnsResults: true

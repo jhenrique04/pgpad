@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
 	import { Card, CardContent } from '$lib/components/ui/card';
 	import { Button } from '$lib/components/ui/button';
 	import ChevronLeft from '~icons/lucide/chevron-left';
@@ -61,25 +61,33 @@
 		}
 	}
 
-	// This is not meant to truly and accurately measure any query's execution time, it's just for the
-	// UI to not "flicker" if executing a very fast query.
-	// Without something like this, a query that finishes in a few milliseconds would very briefly flash
-	// "Loading results..." or etc, only to then be overwritten with the Table with the results.
-	let lastQueryStartedAt = $state(performance.now());
+	let showLoadingState = $state(false);
+	let loadingTimeout: ReturnType<typeof setTimeout>;
 
 	let lastExecutionTrigger = $state<number>(-1);
 
 	$effect(() => {
 		// Execute only when the trigger changes, i.e. when the user explicitly clicked execute
 		// This prevents automatic unwanted execution when switching databases
-		if (executionTrigger !== lastExecutionTrigger) {
-			lastQueryStartedAt = performance.now();
-			lastExecutionTrigger = executionTrigger;
-			executor.executeQuery(query, connectionId, onQueryComplete);
-		}
+		const trigger = executionTrigger;
+
+		untrack(() => {
+			if (trigger !== lastExecutionTrigger) {
+				lastExecutionTrigger = trigger;
+
+				showLoadingState = false;
+				clearTimeout(loadingTimeout);
+				loadingTimeout = setTimeout(() => {
+					showLoadingState = true;
+				}, 150);
+
+				executor.executeQuery(query, connectionId, onQueryComplete);
+			}
+		});
 	});
 
 	onDestroy(() => {
+		clearTimeout(loadingTimeout);
 		executor.dispose();
 	});
 </script>
@@ -260,7 +268,7 @@
 						{:else if activeTab.queryReturnsResults === false}
 							<div class="flex h-full flex-1 items-center justify-center">
 								<div class="text-center">
-									{#if activeTab.status === 'Running' && performance.now() - lastQueryStartedAt > 150}
+									{#if activeTab.status === 'Running' && showLoadingState}
 										<div class="text-muted-foreground text-sm">Executing query...</div>
 									{:else if activeTab.status === 'Completed'}
 										<div class="text-sm font-medium text-green-600">
@@ -269,7 +277,7 @@
 									{/if}
 								</div>
 							</div>
-						{:else if activeTab.status === 'Running' && performance.now() - lastQueryStartedAt > 150}
+						{:else if activeTab.status === 'Running' && showLoadingState}
 							<div class="flex h-full flex-1 items-center justify-center">
 								<div class="text-center">
 									<div class="text-muted-foreground text-sm">Loading results...</div>
