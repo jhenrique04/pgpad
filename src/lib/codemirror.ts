@@ -4,7 +4,8 @@ import {
 	EditorView,
 	highlightSpecialChars,
 	lineNumbers,
-	rectangularSelection
+	rectangularSelection,
+	hoverTooltip
 } from '@codemirror/view';
 import { EditorState, type Extension, Compartment, Transaction } from '@codemirror/state';
 import { PostgreSQL, sql } from '@codemirror/lang-sql';
@@ -22,11 +23,13 @@ import {
 import { keymap } from '@codemirror/view';
 import { indentWithTab, history, historyKeymap, defaultKeymap } from '@codemirror/commands';
 
+import { mount, unmount } from 'svelte';
 import type { DatabaseSchema } from './commands.svelte';
 import { Commands } from './commands.svelte';
 import { registerEditorThemeCallback, theme } from './stores/theme';
 import { fontSize, fontSizeUtils } from './stores/fontSize';
 import { get } from 'svelte/store';
+import TableTooltip from './components/TableTooltip.svelte';
 
 interface ExtendedCompletion extends Completion {
 	formattedLabel?: string;
@@ -455,6 +458,43 @@ function createSqlAutocompletion(schema: DatabaseSchema | null) {
 	});
 }
 
+function createTableHoverTooltip(schema: DatabaseSchema | null) {
+	if (!schema) return [];
+
+	return hoverTooltip((view, pos) => {
+		const word = view.state.wordAt(pos);
+		if (!word) return null;
+
+		const text = view.state.doc.sliceString(word.from, word.to);
+		const matchedTable = schema.tables.find(
+			(t) => t.name.length === text.length && startsWith(t.name, text)
+		);
+
+		if (!matchedTable) return null;
+
+		return {
+			pos: word.from,
+			end: word.to,
+			above: true,
+			create() {
+				const dom = document.createElement('div');
+
+				const component = mount(TableTooltip, {
+					target: dom,
+					props: { table: matchedTable }
+				});
+
+				return {
+					dom,
+					destroy() {
+						unmount(component);
+					}
+				};
+			}
+		};
+	});
+}
+
 function createFontSizeTheme(size: number) {
 	return EditorView.theme({
 		'.cm-content': {
@@ -536,6 +576,7 @@ export function createEditorInstance(options: CreateEditorOptions) {
 	const readOnlyCompartment = new Compartment();
 	const schemaCompartment = new Compartment();
 	const fontSizeCompartment = new Compartment();
+	const hoverTooltipCompartment = new Compartment();
 
 	const extensions: Extension[] = [
 		keymap.of([
@@ -629,6 +670,7 @@ export function createEditorInstance(options: CreateEditorOptions) {
 		keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap]),
 		sql({ dialect: PostgreSQL }),
 		schemaCompartment.of(createSqlAutocompletion(currentSchema)),
+		hoverTooltipCompartment.of(createTableHoverTooltip(currentSchema)),
 		EditorView.lineWrapping,
 		EditorView.updateListener.of((update) => {
 			if (update.docChanged) {
@@ -741,7 +783,10 @@ export function createEditorInstance(options: CreateEditorOptions) {
 	const updateSchema = (newSchema: DatabaseSchema | null) => {
 		currentSchema = newSchema;
 		view.dispatch({
-			effects: schemaCompartment.reconfigure(createSqlAutocompletion(currentSchema))
+			effects: [
+				schemaCompartment.reconfigure(createSqlAutocompletion(currentSchema)),
+				hoverTooltipCompartment.reconfigure(createTableHoverTooltip(currentSchema))
+			]
 		});
 	};
 
